@@ -6,7 +6,6 @@ import os
 import time
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Sequence, Tuple
-
 import numpy as np
 
 # notwendige MediePipe BlazePose-33-Landmark-IDs fest definiert
