@@ -6,3 +6,9 @@ data/output/*
 !data/output/.gitkeep
 *.pt
 .vscode/
+.venv/
+.venv_old/
+__pycache__/
+*.pyc
+data/output/
+Models/models/*.task
