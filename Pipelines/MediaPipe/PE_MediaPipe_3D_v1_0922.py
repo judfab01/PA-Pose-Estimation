@@ -63,7 +63,7 @@ COLOR_FATIGUE = (0, 165, 255)
 # --------------------------------------------------------------------------
 @dataclass
 class Config:
-    model_path: str = "models/pose_landmarker_full.task"
+    model_path: str = "Models/models/pose_landmarker_full.task"
     camera_index: Optional[int] = None              # None = automatisch suchen (find_working_camera)
     csv_path: Optional[str] = "data/output/pose_data.csv"        # Frame-CSV, None = aus
     rep_csv_path: Optional[str] = "data/output/rep_results.csv"  # Rep-CSV, None = aus
