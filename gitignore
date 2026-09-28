@@ -1,0 +1,15 @@
+# Virtuelle Umgebung (nie hochladen, stattdessen requirements.txt)
+.venv/
+
+# Python
+__pycache__/
+*.pyc
+
+# macOS
+.DS_Store
+
+# Ausgaben und heruntergeladene Gewichte
+data/output/*
+!data/output/.gitkeep
+*.pt
+*.task

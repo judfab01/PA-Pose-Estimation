@@ -1,0 +1,6 @@
+numpy
+opencv-python
+mediapipe
+ultralytics
+tensorflow
+tensorflow-hub
