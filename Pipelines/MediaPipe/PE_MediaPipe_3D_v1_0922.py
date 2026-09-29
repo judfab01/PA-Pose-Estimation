@@ -185,7 +185,6 @@ def calculate_angle(a: Sequence[float], vertex: Sequence[float], c: Sequence[flo
 def _point(lm) -> Sequence[float]:
     return (lm.x, lm.y, lm.z)
 
-
 def _visible(*landmarks, min_visibility: float) -> bool:
     return all(lm.visibility >= min_visibility for lm in landmarks)
 
