@@ -39,3 +39,4 @@ typing_extensions==4.16.0
 ultralytics==8.4.123
 ultralytics-thop==2.2.1
 urllib3==2.8.0
+sed -i '' 's/^mediapipe.*/mediapipe==0.10.35/' requirements-mediapipe.txt
