@@ -455,9 +455,9 @@ class RepCounter:
         w_best = hoechstes w aller gueltigen Reps des Satzes (inkl. aktuellem).
         Alle nicht ungueltigen Reps zaehlen, da w die Tiefe herausnormiert."""
         cfg = self.config
-        if result.t_down < cfg.min_omega_phase_s:
+        if result.t_up < cfg.min_omega_phase_s:
             return
-        omega = (self._theta_start - result.min_knee) / result.t_down
+        omega = (cfg.up_threshold_deg - result.min_knee) / result.t_up
         if omega <= 0:
             return
         result.omega_deg_s = omega
