@@ -8,6 +8,7 @@ data/output/*
 .vscode/
 .venv-mediapipe/
 .venv-movenet/
+.venv-yolopose/
 __pycache__/
 *.pyc
 data/output/
