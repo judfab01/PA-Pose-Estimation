@@ -10,7 +10,6 @@ from typing import Dict, List, Optional, Sequence, Tuple
 import numpy as np
 
 # --------------------------------------------------------------------------
- Quelle: TensorFlow-Hub-Modellkarte
 #   https://tfhub.dev/google/movenet/singlepose/thunder/4
 # --------------------------------------------------------------------------
 
