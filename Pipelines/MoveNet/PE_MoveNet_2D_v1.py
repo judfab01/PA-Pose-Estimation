@@ -10,23 +10,8 @@ from typing import Dict, List, Optional, Sequence, Tuple
 import numpy as np
 
 # --------------------------------------------------------------------------
-# Unterschiede zur MediaPipe-3D-Pipeline (pose_tracking_mediapipe_V5.py):
-# - MoveNet liefert wie YOLO-Pose COCO-17-Keypoints -> keine Knoechelwinkel
-#   moeglich (kein foot_index), ANGLE_COLUMNS enthaelt nur Knie-/Hueftwinkel.
-# - Es wird "MoveNet Thunder" verwendet (nicht "Lightning"): Thunder ist die
-#   genauere der beiden Single-Person-Varianten (Eingabegroesse 256x256 statt
-#   192x192 bei Lightning), auf Kosten etwas geringerer Framerate. Das ist
-#   "das beste MoveNet-Modell" fuer Genauigkeit bei weiterhin Echtzeitfaehig-
-#   keit auf CPU. Quelle: TensorFlow-Hub-Modellkarte
+ Quelle: TensorFlow-Hub-Modellkarte
 #   https://tfhub.dev/google/movenet/singlepose/thunder/4
-# - MoveNet ist reines Single-Person-Modell -> keine Personen-Auswahl noetig
-#   (anders als bei YOLO-Pose).
-# - MoveNet liefert normierte Koordinaten (0..1) relativ zum quadratisch
-#   gepaddeten Eingabebild, nicht relativ zum Originalbild -> muessen vor
-#   Weiterverarbeitung zurueckgerechnet werden (siehe denormalize_keypoints()).
-# - Statt "visibility"/"confidence" nennt Google das hier "score" - gleiche
-#   Bedeutung, wird im Code weiterhin "confidence" genannt (Konsistenz zu den
-#   anderen beiden Pipelines).
 # --------------------------------------------------------------------------
 
 MOVENET_THUNDER_URL = "https://tfhub.dev/google/movenet/singlepose/thunder/4"
