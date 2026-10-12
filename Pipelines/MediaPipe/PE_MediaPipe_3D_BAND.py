@@ -58,7 +58,7 @@ LANDMARK_NAMES = [
 ]
 IDX = {n: i for i, n in enumerate(LANDMARK_NAMES)}
 
-# Gelenkwinkel: Name -> (Punkt A, Gelenk B, Punkt C). Winkel liegt bei B.
+# Gelenkwinkel: Name -> (Punkt A, Gelenk B, Punkt C). Winkel B aufgespannt durch A und C wird berechnet
 ANGLES = {
     "l_elbow":    ("left_shoulder", "left_elbow", "left_wrist"),
     "r_elbow":    ("right_shoulder", "right_elbow", "right_wrist"),
@@ -90,21 +90,29 @@ CONNECTIONS = [
     ("left_eye", "left_ear"), ("right_eye", "right_ear"),
 ]
 
-# 2.2 Reale Segmentlaengen in METERN (spaeter ausfuellen, leer = deaktiviert).
-# Reihenfolge der Bones ist wichtig: von Rumpf nach aussen.
+# 2.2 Reale Segmentlaengen von Fabrice in Meter (gemittelt)
+
 SEGMENT_LENGTHS = {
-    # ("left_shoulder", "left_elbow"): 0.30,
-    # ("left_elbow", "left_wrist"): 0.26,
-    # ("left_hip", "left_knee"): 0.42,
-    # ("left_knee", "left_ankle"): 0.40,
-    # ("right_shoulder", "right_elbow"): 0.30,
-    # ("right_elbow", "right_wrist"): 0.26,
-    # ("right_hip", "right_knee"): 0.42,
-    # ("right_knee", "right_ankle"): 0.40,
+    ("left_hip", "left_shoulder"): 0.480,    # Rumpf: Hueftgelenk bis Schultergelenk
+    ("right_hip", "right_shoulder"): 0.480,
+    ("left_shoulder", "left_elbow"): 0.315,  # Oberarme
+    ("right_shoulder", "right_elbow"): 0.315,
+    ("left_elbow", "left_wrist"): 0.270,     # Unterarme
+    ("right_elbow", "right_wrist"): 0.270,
+    ("left_hip", "left_knee"): 0.475,        # Oberschenkel
+    ("right_hip", "right_knee"): 0.475,
+    ("left_knee", "left_ankle"): 0.415,      # Unterschenkel
+    ("right_knee", "right_ankle"): 0.415,
+    ("left_ankle", "left_foot_index"): 0.200,   # Fuss: Knoechel bis Fussspitze
+    ("right_ankle", "right_foot_index"): 0.200,
 }
 
-# Kinematische Kette: Gelenk -> direkte Nachfolger. Wird fuer das Mitziehen
-# aller Nachfolger bei der Segmentkorrektur gebraucht.
+BODY_WIDTHS = {
+    ("left_hip", "right_hip"): 0.310,            # Hueftbreite
+    ("left_shoulder", "right_shoulder"): 0.400,  # Schulterbreite
+}
+
+# Kinematische Kette: Gelenk -> direkte Nachfolger für Korrektur mit Segmentlängen
 CHILDREN = {
     "left_shoulder": ["left_elbow"], "right_shoulder": ["right_elbow"],
     "left_elbow": ["left_wrist"], "right_elbow": ["right_wrist"],
@@ -123,6 +131,26 @@ def descendants(name):
     for ch in CHILDREN.get(name, []):
         out.append(ch)
         out += descendants(ch)
+    return out
+
+def segment_check_report(samples, measured):
+    """
+    Vergleicht Median der rohen MediaPipe-Abstaende mit den gemessenen Laengen.
+    samples: {(a, b): [Abstand_m, ...]}, measured: {(a, b): Laenge_m}.
+    Rueckgabe: {"a-b": {"measured_m", "mediapipe_median_m", "deviation_pct", "n"}}
+    deviation_pct = (MediaPipe - gemessen) / gemessen * 100. Ohne Samples: None-Werte.
+    """
+    out = {}
+    for key, length in measured.items():
+        vals = samples.get(key, [])
+        if vals:
+            med = float(np.median(vals))
+            out[f"{key[0]}-{key[1]}"] = {
+                "measured_m": length, "mediapipe_median_m": round(med, 4),
+                "deviation_pct": round((med - length) / length * 100.0, 1), "n": len(vals)}
+        else:
+            out[f"{key[0]}-{key[1]}"] = {
+                "measured_m": length, "mediapipe_median_m": None, "deviation_pct": None, "n": 0}
     return out
 
 # 3 Fitnessband-Farben: HSV-Bereiche (OpenCV: H 0-179, S 0-255, V 0-255).
@@ -369,6 +397,8 @@ def main():
     rep_id = 0
     ema_raw = EmaFilter(SMOOTH_ALPHA)  # Winkel ohne Segmentkorrektur
     ema_cor = EmaFilter(SMOOTH_ALPHA)  # Winkel mit Segmentkorrektur
+    check_pairs = {**SEGMENT_LENGTHS, **BODY_WIDTHS}
+    check_samples = {k: [] for k in check_pairs}  # rohe MediaPipe-Abstaende fuer den Laengenvergleich
 
     # Lauf-Metadaten (Sidecar-Datei), am Ende mit Frame- und Wiederholungszahl ergaenzt
     meta_path = os.path.splitext(args.out)[0] + "_meta.json"
@@ -381,6 +411,7 @@ def main():
         "model": MODEL_PATH,
         "band_candidates": color_names,
         "segment_lengths_m": {f"{p}-{c}": v for (p, c), v in SEGMENT_LENGTHS.items()},
+        "body_widths_m": {f"{p}-{c}": v for (p, c), v in BODY_WIDTHS.items()},
         "smooth_alpha": SMOOTH_ALPHA,
         "vis_threshold": VIS_THRESHOLD,
         "started_at": datetime.now().astimezone().isoformat(timespec="seconds"),
@@ -416,6 +447,11 @@ def main():
                 world_raw = np.array([[p.x, p.y, p.z] for p in wl])
                 world = apply_segment_lengths(world_raw)  # 2.2 (Kopie, Rohwerte bleiben erhalten)
                 vis = np.array([lm.visibility for lm in img_lm])
+
+                                # Rohe Segmentabstaende sammeln (nur wenn beide Landmarks sichtbar)
+                for (a, b) in check_pairs:
+                    if vis[IDX[a]] >= VIS_THRESHOLD and vis[IDX[b]] >= VIS_THRESHOLD:
+                        check_samples[(a, b)].append(float(np.linalg.norm(world_raw[IDX[a]] - world_raw[IDX[b]])))
 
                 # 2.1 alle Gelenkwinkel, ohne und mit Segmentkorrektur.
                 # Gueltig nur bei Sichtbarkeit >= VIS_THRESHOLD aller drei Landmarks, danach EMA-Glaettung.
@@ -470,7 +506,17 @@ def main():
     cap.release()
     landmarker.close()
     cv2.destroyAllWindows()
-
+    
+    # Laengenvergleich: gemessen gegen MediaPipe-Median (Hinweis auf Punktdefinition/Skalierung)
+    meta["segment_check"] = segment_check_report(check_samples, check_pairs)
+    print("\nSegmentvergleich (gemessen vs. MediaPipe-Median, roh):")
+    for name, r in meta["segment_check"].items():
+        if r["n"] == 0:
+            print(f"  {name:32s} keine gueltigen Frames")
+        else:
+            print(f"  {name:32s} gemessen {r['measured_m']:.3f} m | MediaPipe {r['mediapipe_median_m']:.3f} m "
+                  f"| Abw. {r['deviation_pct']:+.1f} % | n={r['n']}")
+            
     meta["frames"] = frame_idx
     meta["reps_marked"] = rep_id
     meta["ended_at"] = datetime.now().astimezone().isoformat(timespec="seconds")
