@@ -65,6 +65,11 @@ COLOR_FATIGUE = (0, 165, 255)
 class Config:
     model_path: str = "Models/models/pose_landmarker_full.task"
     camera_index: Optional[int] = None              # None = automatisch suchen (find_working_camera)
+    # in class Config, z.B. unter camera_index
+    video_path: Optional[str] = None            # None = Live-Kamera
+    output_video_path: Optional[str] = None     # annotiertes Video speichern, None = aus
+    show_window: bool = True                    # False = headless, schneller
+    realtime_playback: bool = False             # True = Anzeige in Videogeschwindigkeit
     csv_path: Optional[str] = "data/output/pose_data.csv"        # Frame-CSV, None = aus
     rep_csv_path: Optional[str] = "data/output/rep_results.csv"  # Rep-CSV, None = aus
     min_visibility: float = 0.5                     # je hoeher desto strenger der Ausschuss wenn Gelenk nicht sichtbar
