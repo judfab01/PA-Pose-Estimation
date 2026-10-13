@@ -6,6 +6,16 @@ import time
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Sequence, Tuple
 import numpy as np
+import urllib.request
+
+# --------------------------------------------------------------------------
+# 0) Pfade: alles relativ zum Ordner dieser Datei (laeuft aus jedem Arbeitsordner)
+# --------------------------------------------------------------------------
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+MODEL_FILENAME = "pose_landmarker_heavy.task"
+MODEL_URL = ("https://storage.googleapis.com/mediapipe-models/pose_landmarker/"
+             "pose_landmarker_heavy/float16/latest/pose_landmarker_heavy.task")
+DEFAULT_VIDEO = "/Users/fabrice/Desktop/PA Data/Squat frontal.MOV"
 
 # notwendige MediePipe BlazePose-33-Landmark-IDs fest definiert
 LEFT_SHOULDER, RIGHT_SHOULDER = 11, 12
@@ -63,17 +73,17 @@ COLOR_FATIGUE = (0, 165, 255)
 # --------------------------------------------------------------------------
 @dataclass
 class Config:
-    model_path: str = "Models/models/pose_landmarker_full.task"
+    model_path: str = os.path.join(BASE_DIR, "models", MODEL_FILENAME)   # heavy, wird bei Bedarf geladen
     camera_index: Optional[int] = None              # None = automatisch suchen (find_working_camera)
 
     # --- Eingabequelle / Videoausgabe (NEU) ---
-    video_path: Optional[str] = '/Users/fabrice/Desktop/PA Data/Squat frontal.MOV'                # None = Live-Kamera, sonst Videodatei als Eingabe
+    video_path: Optional[str] = DEFAULT_VIDEO       # None = Live-Kamera, sonst Videodatei als Eingabe
     output_video_path: Optional[str] = None         # annotiertes Video speichern, None = aus
-    show_window: bool = True                        # False = headless (schneller, keine Tastenabfrage)
+    show_window: bool = False                       # False = headless (schneller, Abbruch mit Ctrl+C), True = Fenster mit q / n
     realtime_playback: bool = False                 # True = Anzeige in Videogeschwindigkeit (nur Video)
 
-    csv_path: Optional[str] = "data/output/pose_data.csv"        # Frame-CSV, None = aus
-    rep_csv_path: Optional[str] = "data/output/rep_results.csv"  # Rep-CSV, None = aus
+    csv_path: Optional[str] = os.path.join(BASE_DIR, "data", "output", "pose_data_heavy.csv")        # Frame-CSV, None = aus
+    rep_csv_path: Optional[str] = os.path.join(BASE_DIR, "data", "output", "rep_results_heavy.csv")  # Rep-CSV, None = aus
     min_visibility: float = 0.5                     # je hoeher desto strenger der Ausschuss wenn Gelenk nicht sichtbar
 
     # --- Rep-Zustandsmaschine (Kniewinkel: 180 = gestreckt) ---
@@ -100,7 +110,7 @@ class Config:
     reps_per_set: int = 10                          # nur Anzeige "Gut x/y"
 
     # --- Ermuedung ueber Velocity Loss (Sanchez-Medina & Gonzalez-Badillo, 2011) ---
-    min_omega_phase_s: float = 0.25                 # Senkphase kuerzer = keine Geschwindigkeitsberechnung
+    min_omega_phase_s: float = 0.25                 # Aufstiegsphase kuerzer = keine Geschwindigkeitsberechnung
     vl_warn_pct: float = 20.0                       # ANNAHME aus Kraftsport-Literatur, fuer Rehab nicht validiert
     fatigue_min_valid_reps: int = 3                 # mind. so viele gueltige Reps im Satz
     fatigue_consecutive_reps: int = 2               # so viele Reps in Folge ueber vl_warn_pct
@@ -129,6 +139,20 @@ def find_working_camera(max_index: int = 3) -> int:
 # --------------------------------------------------------------------------
 # 3) MediaPipe-Estimator aufsetzen
 # --------------------------------------------------------------------------
+def ensure_model(model_path: str) -> None:
+    """Laedt das heavy-Modell automatisch, falls die Datei fehlt."""
+    if os.path.isfile(model_path):
+        return
+    os.makedirs(os.path.dirname(model_path) or ".", exist_ok=True)
+    print(f"Modell fehlt, lade nach {model_path} ...")
+    try:
+        urllib.request.urlretrieve(MODEL_URL, model_path)
+    except Exception as e:
+        raise SystemExit(
+            f"Modell-Download fehlgeschlagen ({type(e).__name__}: {e}).\n"
+            f"Manuell laden: {MODEL_URL}\nund speichern als: {model_path}")
+
+
 def create_pose_landmarker(model_path: str):
     """Erstellt den PoseLandmarker mit explizitem CPU-Delegate.
     Ohne diesen Fix stuerzt mediapipe>=1.0 auf macOS Apple Silicon beim
@@ -282,7 +306,7 @@ class RepCounter:
 
     - Jeder Versuch unterhalb attempt_start_deg wird bewertet (nicht nur tiefe Reps).
     - Ermuedung: Velocity Loss VL = 100 * (w_best - w_i) / w_best mit
-      w_i = (theta_start - theta_min) / t_down [Grad/s]
+      w_i = (up_threshold_deg - theta_min) / t_up [Grad/s] (Aufstiegsphase)
       (Sanchez-Medina & Gonzalez-Badillo 2011, Winkelgeschwindigkeit als Proxy).
       Ermuedung aktiv, wenn VL mehrere Reps in Folge >= vl_warn_pct."""
 
@@ -457,7 +481,7 @@ class RepCounter:
         return result
 
     def _apply_velocity_loss(self, result: RepResult):
-        """VL_i = 100 * (w_best - w_i) / w_best, w_i in Grad/s (Senkphase).
+        """VL_i = 100 * (w_best - w_i) / w_best, w_i in Grad/s (Aufstiegsphase, t_up).
         w_best = hoechstes w aller gueltigen Reps des Satzes (inkl. aktuellem).
         Alle nicht ungueltigen Reps zaehlen, da w die Tiefe herausnormiert."""
         cfg = self.config
@@ -798,6 +822,8 @@ def run(config: Config):
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) if use_video else 0
     video_writer = None
 
+    ensure_model(config.model_path)
+    print(f"Modell: {config.model_path}")
     landmarker = create_pose_landmarker(config.model_path)
     rep_counter = RepCounter(config)
     smoother = AngleSmoother(config.smoothing_alpha)
@@ -1004,7 +1030,7 @@ def _run_selftests():
     assert counter.fatigue_active is True
     res, t = feed(counter, REP, t, 0.3)  # wieder schnell: VL 0 -> Ermuedung weg
     assert counter.fatigue_active is False
-    # Formel-Kontrolle: omega = (120-85)/0.6 = 58.33, langsam (120-85)/1.0 = 35 -> VL = 40.0
+    # Formel-Kontrolle: omega = (160-85)/t_up, schnell t_up=0.9 -> 83.33, langsam t_up=1.5 -> 50 -> VL = 40.0
     assert abs(counter.results[3].vl_pct - 40.0) < 1e-6, counter.results[3].vl_pct
 
     # 10) Satzwechsel setzt Zaehler und Ermuedung zurueck
@@ -1054,41 +1080,58 @@ def _run_selftests():
         stamps = [int(round(i * 1000.0 / test_fps)) for i in range(120)]
         assert all(b > a for a, b in zip(stamps, stamps[1:])), test_fps
 
-    # 15) Config-Defaults: ohne Video-Argumente bleibt Live-Verhalten
+    # 15) Config-Defaults: heavy-Modell ist Standard
     default_cfg = Config()
-    assert default_cfg.video_path is None and default_cfg.show_window is True
+    assert default_cfg.model_path.endswith(MODEL_FILENAME) and "heavy" in default_cfg.model_path
 
     print("Selbsttests bestanden.")
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--model", default="models/pose_landmarker_full.task")
-    parser.add_argument("--camera", type=int, default=None, help="Kamera-Index direkt setzen (Default: automatisch)")
-    parser.add_argument("--video", default=None, help="Pfad zu Videodatei (statt Live-Kamera)")
+    parser = argparse.ArgumentParser(
+        description="Alle Argumente sind optional. Ohne Argumente: heavy-Modell, Video aus DEFAULT_VIDEO, "
+                    "Ausgabe in data/output/pose_data_heavy.csv und rep_results_heavy.csv (neben dieser Datei).")
+    parser.add_argument("--model", default=None, help="Modellpfad (Default: models/pose_landmarker_heavy.task)")
+    parser.add_argument("--video", default=None, help="Pfad zu Videodatei (Default: DEFAULT_VIDEO)")
+    parser.add_argument("--live", action="store_true", help="Live-Kamera statt Video")
+    parser.add_argument("--camera", type=int, default=None, help="Kamera-Index (impliziert --live)")
     parser.add_argument("--out-video", default=None, help="Annotiertes Video speichern")
-    parser.add_argument("--no-window", action="store_true", help="Kein Fenster (schneller, keine Tastenabfrage)")
-    parser.add_argument("--realtime", action="store_true", help="Anzeige in Videogeschwindigkeit (nur mit --video)")
-    parser.add_argument("--csv", default="data/output/pose_data.csv", help="Zielpfad fuer Frame-CSV")
-    parser.add_argument("--rep-csv", default="data/output/rep_results.csv", help="Zielpfad fuer Rep-CSV")
+    parser.add_argument("--window", action="store_true", help="Fenster anzeigen (q = beenden, n = neuer Satz)")
+    parser.add_argument("--realtime", action="store_true", help="Anzeige in Videogeschwindigkeit (nur mit --video und --window)")
+    parser.add_argument("--csv", default=None, help="Zielpfad fuer Frame-CSV")
+    parser.add_argument("--rep-csv", default=None, help="Zielpfad fuer Rep-CSV")
     parser.add_argument("--no-csv", action="store_true", help="Beide CSV-Exporte deaktivieren")
-    parser.add_argument("--target", type=float, default=90.0, help="Ziel-Kniewinkel in Grad")
-    parser.add_argument("--vl-warn", type=float, default=20.0, help="Velocity-Loss-Schwelle in Prozent")
+    parser.add_argument("--target", type=float, default=None, help="Ziel-Kniewinkel in Grad")
+    parser.add_argument("--vl-warn", type=float, default=None, help="Velocity-Loss-Schwelle in Prozent")
     parser.add_argument("--selftest", action="store_true")
     args = parser.parse_args()
 
     if args.selftest:
         _run_selftests()
     else:
-        run(Config(
-            model_path=args.model,
-            camera_index=args.camera,
-            video_path=args.video,
-            output_video_path=args.out_video,
-            show_window=not args.no_window,
-            realtime_playback=args.realtime,
-            csv_path=None if args.no_csv else args.csv,
-            rep_csv_path=None if args.no_csv else args.rep_csv,
-            target_knee_deg=args.target,
-            vl_warn_pct=args.vl_warn,
-        ))
+        cfg = Config()  # alle Defaults stehen oben in Config
+        if args.model is not None:
+            cfg.model_path = args.model
+        if args.video is not None:
+            cfg.video_path = args.video.strip("'\"")
+        if args.live or args.camera is not None:
+            cfg.video_path = None
+            cfg.camera_index = args.camera
+        if args.out_video is not None:
+            cfg.output_video_path = args.out_video
+        if args.window:
+            cfg.show_window = True
+        if args.realtime:
+            cfg.realtime_playback = True
+        if args.csv is not None:
+            cfg.csv_path = args.csv
+        if args.rep_csv is not None:
+            cfg.rep_csv_path = args.rep_csv
+        if args.no_csv:
+            cfg.csv_path = None
+            cfg.rep_csv_path = None
+        if args.target is not None:
+            cfg.target_knee_deg = args.target
+        if args.vl_warn is not None:
+            cfg.vl_warn_pct = args.vl_warn
+        run(cfg)
