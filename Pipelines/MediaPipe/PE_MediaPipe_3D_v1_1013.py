@@ -67,7 +67,7 @@ class Config:
     camera_index: Optional[int] = None              # None = automatisch suchen (find_working_camera)
 
     # --- Eingabequelle / Videoausgabe (NEU) ---
-    video_path: Optional[str] = None                # None = Live-Kamera, sonst Videodatei als Eingabe
+    video_path: Optional[str] = '/Users/fabrice/Desktop/PA Data/Squat frontal.MOV'                # None = Live-Kamera, sonst Videodatei als Eingabe
     output_video_path: Optional[str] = None         # annotiertes Video speichern, None = aus
     show_window: bool = True                        # False = headless (schneller, keine Tastenabfrage)
     realtime_playback: bool = False                 # True = Anzeige in Videogeschwindigkeit (nur Video)
