@@ -156,7 +156,7 @@ def segment_check_report(samples, measured):
 # 3 Fitnessband-Farben: HSV-Bereiche (OpenCV: H 0-179, S 0-255, V 0-255).
 # Pro Farbe eine Liste von (untere Grenze, obere Grenze). Rot wrappt ueber H=0.
 BAND_COLORS = {
-    "red":    [((0, 120, 70), (10, 255, 255)), ((170, 120, 70), (179, 255, 255))],
+    "red": [((0, 80, 60), (12, 255, 255)), ((165, 80, 60), (179, 255, 255))],
     "green":  [((40, 80, 50), (85, 255, 255))],
     "blue":   [((95, 120, 50), (130, 255, 255))],
     "yellow": [((20, 110, 100), (35, 255, 255))],
@@ -164,8 +164,10 @@ BAND_COLORS = {
     "pink":   [((140, 70, 100), (169, 255, 255))],
 }
 BAND_DRAW_BGR = {
-    "red": (0, 0, 255), "green": (0, 200, 0), "blue": (255, 100, 0),
-    "yellow": (0, 230, 255), "orange": (0, 140, 255), "pink": (200, 0, 255),
+"red": (255, 255, 0),     # Cyan
+"red": (0, 255, 0),       # Hellgrün
+"red": (255, 255, 255),   # Weiss
+"red": (255, 0, 255),     # Magenta
 }
 BAND_MIN_AREA = 800  # Pixel; kleinere Konturen werden ignoriert
 
