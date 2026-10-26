@@ -13,3 +13,10 @@ __pycache__/
 *.pyc
 data/output/
 Models/models/*.task
+*.onnx
+*.task
+.venv-instanthmr/
+output/
+*.MOV
+*.mov
+*.mp4
