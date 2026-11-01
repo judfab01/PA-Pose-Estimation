@@ -648,7 +648,7 @@ def add_model_args(ap):
     ap.add_argument("--model", default="models/instanthmr.onnx")
     ap.add_argument("--device", default="cpu", help="cpu | coreml")
     ap.add_argument("--detector-variant", default="nano")
-    ap.add_argument("--detector-stride", type=int, default=3)
+    ap.add_argument("--detector-stride", type=int, default=1)
     ap.add_argument("--focal", type=float, default=None, help="Brennweite in px")
 
 
