@@ -58,6 +58,7 @@ Beispiele (Kommandozeile):
   python run_mediapipe.py --video "/Users/fabrice/Desktop/PA Data/REVERSEBUTTERFLY.MOV" --exercise reversebutterfly
   python run_mediapipe.py --camera 0 --exercise reversebutterfly
 """
+
 import argparse
 import json
 import platform
