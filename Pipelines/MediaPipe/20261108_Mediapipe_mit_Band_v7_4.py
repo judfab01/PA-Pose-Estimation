@@ -1,7 +1,15 @@
 """
-run_mediapipe.py (v7.4)
+run_mediapipe.py (v7.5)
 MediaPipe Pose Landmarker (Heavy, CPU) + rotes Theraband (Griffpunkt zu Griffpunkt) -> CSV, SegDev-CSV, Meta-JSON, HUD.
 Gleicher Aufbau und gleiches Ausgabeformat wie run_instanthmr.py. Eigenständig, keine weiteren Dateien nötig.
+
+Änderungen v7.5 gegenüber v7.4:
+  - Ellbogenmoment komplett entfernt (Code, HUD, Kurve, CSV). LOAD_JOINTS = Schulter links, Schulter rechts.
+    CSV-Spalten lever_l_elbow_m, lever_r_elbow_m, moment_l_elbow_nm, moment_r_elbow_nm entfallen.
+  - Wiederholungszähler automatisch: Signal = Abstand der Handgelenke (3D, korrigiert, m), geglättet. Eine Wiederholung
+    = Anstieg um mindestens --rep-min-amp (Standard 0.25 m) und Rückgang um denselben Betrag (Umkehrpunkt-Erkennung
+    mit Hysterese), mindestens --rep-min-gap-s (Standard 0.5 s) zwischen zwei Zählungen. Läuft auch mit --no-show.
+    Tasten: Leertaste +1, z -1 (Korrektur). Spalte rep_id enthält den Zählerstand. Meta: reps, rep_min_amp_m.
 
 Änderungen v7.4 gegenüber v7.3:
   - Freie Bandlänge wird nicht mehr abgefragt: Startposition = Band gerade und ungedehnt, freie Länge = Startlänge L0
@@ -10,7 +18,9 @@ Gleicher Aufbau und gleiches Ausgabeformat wie run_instanthmr.py. Eigenständig,
   - Abfrage und Argument Bildskala entfallen (--scale-px-per-m, scale_src 1). Skala s nur automatisch.
   - Abfrage "erste N Frames" entfällt (Argument --max-frames bleibt).
   - HUD bereinigt: Skelett, Gelenkwinkel, Bandlinie, Band-Korridor, Dehnung (nur bei erkanntem Band), Kraft,
-    Gelenkmomente (Schulter, Ellbogen). Rote Statuszeile nur bei Problem (Band nicht erkannt, Startlänge wird
+    Gelenkmomente (Schulter, Ellbogen; Ellbogen ab v7.5 entfernt), Rep-Zähler oben bei den Metriken, Fusszeile (Modell, Frame, rep, ms, fps).
+    Unter dem Video läuft eine Kurve (10 s) mit Kraft und Schultermoment (ab v7.5), Maxima markiert.
+    Rote Statuszeile nur bei Problem (Band nicht erkannt, Startlänge wird
     gemessen, Skala nicht messbar). CSV-Spalten unverändert.
 
 Änderungen v7.3 gegenüber v7.2 (Aufnahme von oben, Beine nicht im Bild: v7.2 fiel still auf v6 zurück):
@@ -27,7 +37,7 @@ Gleicher Aufbau und gleiches Ausgabeformat wie run_instanthmr.py. Eigenständig,
   - Bandkraft: Kraft-Dehnungs-Tabelle des roten Therabands (ein Strang, kgf, Herstellertabelle), Dehnung
     bezogen auf die freie Länge (--band-rest-m), Stränge parallel (--band-strands, doppelt gelegt = 2).
     CSV band_force_n. Ohne freie Länge bleibt die Kraft leer.
-  - Gelenkmomente durch das Band (Schulter, Ellbogen, links/rechts): Hebelarm = Abstand des Gelenks zur Linie
+  - Gelenkmomente durch das Band (Schulter links/rechts; Ellbogen bis v7.4): Hebelarm = Abstand des Gelenks zur Linie
     Griff links -> Griff rechts (3D, korrigierte Koordinaten), Moment = Kraft * Hebelarm.
     CSV lever_<gelenk>_m, moment_<gelenk>_nm. Nur das Band, ohne Armgewicht und Beschleunigung.
 
@@ -404,13 +414,49 @@ def print_depth_report(report):
               f"| gesperrt (vis) {r['gated_pct']:5.1f} % | n={r['frames']}")
 
 
+# ---------------------------------------------------------------- Wiederholungszähler
+class RepCounter:
+    """Zählt Wiederholungen aus einem periodischen Signal (hier: Handgelenkabstand in m).
+    Umkehrpunkt-Erkennung mit Hysterese: Zustand 'tief' -> 'hoch', sobald das Signal um min_amp über sein Minimum
+    gestiegen ist; Zählung, sobald es danach um min_amp unter sein Maximum gefallen ist. Zwischen zwei
+    Zählungen mindestens min_gap_s. Kleine Schwankungen unter min_amp werden ignoriert."""
+
+    def __init__(self, min_amp=0.25, min_gap_s=0.5, alpha=0.3):
+        self.min_amp, self.min_gap, self.alpha = min_amp, min_gap_s, alpha
+        self.count, self.x, self.ext, self.high, self.t_last = 0, NAN, NAN, False, -1e9
+
+    def update(self, d, t_s):
+        if not np.isfinite(d):
+            return self.count
+        self.x = d if not np.isfinite(self.x) else self.alpha * d + (1 - self.alpha) * self.x
+        if not np.isfinite(self.ext):
+            self.ext = self.x
+        if not self.high:
+            self.ext = min(self.ext, self.x)
+            if self.x - self.ext >= self.min_amp:
+                self.high, self.ext = True, self.x
+        else:
+            self.ext = max(self.ext, self.x)
+            if self.ext - self.x >= self.min_amp:
+                if t_s - self.t_last >= self.min_gap:
+                    self.count += 1
+                    self.t_last = t_s
+                self.high, self.ext = False, self.x
+        return self.count
+
+
+def wrist_distance(w):
+    """Abstand linkes zu rechtes Handgelenk (m, 3D, korrigierte Koordinaten)."""
+    return float(np.linalg.norm(w[JI["l_wrist"]] - w[JI["r_wrist"]]))
+
+
 # ---------------------------------------------------------------- Bandkraft und Gelenkmomente
 G = 9.81   # m/s^2
 # Rotes Theraband, ein Strang: Dehnung (Anteil der freien Länge) -> Widerstand in kgf (Herstellertabelle).
 # Zwischen 0 und 25 % linear ab 0, über 250 % keine Kraft (NaN).
 BAND_STRAIN = (0.0, 0.25, 0.50, 0.75, 1.00, 1.25, 1.50, 1.75, 2.00, 2.25, 2.50)
 BAND_KGF = (0.0, 0.7, 1.2, 1.5, 1.8, 2.0, 2.2, 2.5, 2.7, 2.9, 3.2)
-LOAD_JOINTS = ("l_shoulder", "r_shoulder", "l_elbow", "r_elbow")
+LOAD_JOINTS = ("l_shoulder", "r_shoulder")
 
 
 def band_force_n(len_m, rest_m, strands):
@@ -436,11 +482,11 @@ def grip_3d(w, pose, wh, s, m):
 
 def band_loads(w, g, force_n):
     """Hebelarm = Abstand Gelenk zur Bandlinie (Griff links, Griff rechts), Moment = Kraft * Hebelarm.
-    Rückgabe: 4 Hebelarme (m) und 4 Momente (Nm) in der Reihenfolge LOAD_JOINTS."""
+    Rückgabe: 2 Hebelarme (m) und 2 Momente (Nm) in der Reihenfolge LOAD_JOINTS (Schulter links, rechts)."""
     u = g[1] - g[0]
     n = float(np.linalg.norm(u))
     if not np.isfinite(n) or n < 1e-6:
-        return [NAN] * 8
+        return [NAN] * (2 * len(LOAD_JOINTS))
     u = u / n
     lev = [float(np.linalg.norm(np.cross(g[0] - w[JI[j]], u))) for j in LOAD_JOINTS]
     return lev + [force_n * v for v in lev]
@@ -761,17 +807,22 @@ RED = (0, 0, 255)
 
 
 def _txt(img, s, org, scale=0.6, color=(255, 255, 255), th=1):
+    th = max(1, int(round(th)))
+    d = 1 if th < 3 else 2
     # Rand mit gleicher Strichstärke in 8 Richtungen (dickerer Rand hat in OpenCV 5 eine andere Zeichenbreite
     # und läge versetzt unter dem Text)
-    for dx, dy in ((-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0), (1, 1)):
+    for dx, dy in ((-d, -d), (-d, 0), (-d, d), (0, -d), (0, d), (d, -d), (d, 0), (d, d)):
         cv2.putText(img, s, (org[0] + dx, org[1] + dy), cv2.FONT_HERSHEY_SIMPLEX, scale, (0, 0, 0), th, cv2.LINE_AA)
     cv2.putText(img, s, org, cv2.FONT_HERSHEY_SIMPLEX, scale, color, th, cv2.LINE_AA)
 
 
-def draw_hud(frame, pose, ang_sm, band, info):
-    """Skelett, Gelenkwinkel, Bandlinie, Band-Korridor, Dehnung (nur bei erkanntem Band), Kraft, Gelenkmomente.
-    info: pct, force_n, moments (Schulter L/R, Ellbogen L/R in Nm), status (Text, nur bei Problem)."""
+def draw_hud(frame, model_name, pose, ang_sm, band, info):
+    """Skelett, Gelenkwinkel, Bandlinie, Band-Korridor, Dehnung (nur bei erkanntem Band), Kraft, Schultermoment.
+    info: pct, force_n, moments (Schulter L/R in Nm), rep, status (Text, nur bei Problem),
+    frame, infer_ms, fps (Fusszeile), u (Schrift- und Linienfaktor, gleicht die Verkleinerung der Anzeige aus)."""
     h, w = frame.shape[:2]
+    u = info["u"]
+    lw = max(2, int(round(2 * u)))
     if pose.detected:
         px = pose.img * np.array([w, h])
         ok = pose.vis >= VIS_MIN
@@ -779,33 +830,130 @@ def draw_hud(frame, pose, ang_sm, band, info):
             ia, ib = JI[a], JI[b]
             if np.all(np.isfinite(px[[ia, ib]])):
                 cv2.line(frame, tuple(px[ia].astype(int)), tuple(px[ib].astype(int)),
-                         GREEN if ok[ia] and ok[ib] else GREY, 2, cv2.LINE_AA)
+                         GREEN if ok[ia] and ok[ib] else GREY, lw, cv2.LINE_AA)
         for i in range(len(JOINTS)):
             if np.all(np.isfinite(px[i])):
-                cv2.circle(frame, tuple(px[i].astype(int)), 4, GREEN if ok[i] else GREY, -1)
+                cv2.circle(frame, tuple(px[i].astype(int)), max(4, int(round(4 * u))), GREEN if ok[i] else GREY, -1)
         for (name, a, b, c), v in zip(ANGLES, ang_sm):
             ib = JI[b]
             if np.isfinite(v) and np.all(np.isfinite(px[ib])):
-                _txt(frame, f"{v:.0f}", (int(px[ib][0]) + 6, int(px[ib][1]) - 6), 0.5, YELLOW)
+                _txt(frame, f"{v:.0f}", (int(px[ib][0]) + int(6 * u), int(px[ib][1]) - int(6 * u)), 0.5 * u, YELLOW, u)
 
     if band["box"] is not None:                              # Korridor A->B
-        cv2.polylines(frame, [band["box"]], True, CYAN if band["present"] else GREY, 2, cv2.LINE_AA)
+        cv2.polylines(frame, [band["box"]], True, CYAN if band["present"] else GREY, lw, cv2.LINE_AA)
     if band["p0"] is not None:
         p0 = tuple(int(round(v)) for v in band["p0"])
         p1 = tuple(int(round(v)) for v in band["p1"])
-        cv2.line(frame, p0, p1, MAGENTA if band["present"] else GREY, 2, cv2.LINE_AA)
+        cv2.line(frame, p0, p1, MAGENTA if band["present"] else GREY, lw, cv2.LINE_AA)
 
+    x = int(12 * u)
     if band["present"] and np.isfinite(info["pct"]):
-        _txt(frame, f"Dehnung {info['pct']:+.1f} %", (12, 44), 1.1, YELLOW, 2)
+        _txt(frame, f"Dehnung {info['pct']:+.1f} %", (x, int(44 * u)), 1.1 * u, YELLOW, 2 * u)
     if np.isfinite(info["force_n"]):
-        _txt(frame, f"Kraft {info['force_n']:.0f} N", (12, 84), 0.9, YELLOW, 2)
-    sl, sr, el, er = info["moments"]
+        _txt(frame, f"Kraft {info['force_n']:.0f} N", (x, int(84 * u)), 0.9 * u, YELLOW, 2 * u)
+    sl, sr = info["moments"]
     if np.isfinite(sl) or np.isfinite(sr):
-        _txt(frame, f"Moment Schulter  L {sl:.1f}  R {sr:.1f} Nm", (12, 114), 0.6, YELLOW, 1)
-    if np.isfinite(el) or np.isfinite(er):
-        _txt(frame, f"Moment Ellbogen  L {el:.1f}  R {er:.1f} Nm", (12, 138), 0.6, YELLOW, 1)
+        _txt(frame, f"Moment Schulter  L {sl:.1f}  R {sr:.1f} Nm", (x, int(114 * u)), 0.6 * u, YELLOW, u)
+    _txt(frame, f"Rep {info['rep']}", (x, int(152 * u)), 0.9 * u, YELLOW, 2 * u)
     if info["status"]:
-        _txt(frame, info["status"], (12, h - 20), 0.7, RED, 2)
+        _txt(frame, info["status"], (x, h - int(44 * u)), 0.7 * u, RED, 2 * u)
+    _txt(frame, f"{model_name}  frame {info['frame']}  rep {info['rep']}  "
+                f"{info['infer_ms']:.0f} ms  {info['fps']:.0f} fps", (x, h - int(14 * u)), 0.55 * u, (255, 255, 255), u)
+
+
+
+# ---------------------------------------------------------------- Mitlaufende Kraft- und Momentkurve (unter dem Video)
+VIDEO_DISP_H = 700       # Anzeigehöhe des Videos (grösseres Video wird nur für die Anzeige verkleinert)
+STRIP_H = 200            # Höhe der Kurve unter dem Video
+MIN_DISP_W = 600         # Mindestbreite des Fensters (schmale Hochformatvideos werden seitlich aufgefüllt)
+PLOT_SECONDS = 10.0      # Zeitfenster der Kurve
+PC_FORCE, PC_SHOULDER = (90, 90, 255), (0, 165, 255)   # BGR: rot, orange
+
+
+def _mean2(a, b):
+    v = [x for x in (a, b) if np.isfinite(x)]
+    return float(np.mean(v)) if v else NAN
+
+
+def _nice_max(v, step, floor):
+    return floor if not np.isfinite(v) else max(floor, float(np.ceil(v / step) * step))
+
+
+class LivePlot:
+    """Rollende Kurve: Bandkraft (N, linke Achse) sowie Schultermoment (Nm, rechte Achse,
+    Mittel aus links und rechts). Markiert das Maximum von Kraft und Schultermoment im Zeitfenster: Liegen beide
+    Maxima an verschiedenen Stellen, ist das Moment nicht dort maximal, wo die Kraft maximal ist (Hebelarm)."""
+
+    def __init__(self, frame_w, frame_h, n_win, seconds):
+        self.k = min(1.0, VIDEO_DISP_H / frame_h)
+        self.vw, self.vh = int(round(frame_w * self.k)), int(round(frame_h * self.k))
+        self.w, self.h = max(self.vw, MIN_DISP_W), STRIP_H
+        self.u = max(1.0, 0.75 / self.k)     # HUD-Faktor: Schrift im Anzeigebild etwa so gross wie bei Skalierung 1
+        self.n, self.sec = max(int(n_win), 10), seconds
+        self.f, self.s = [], []
+        self.fmax, self.mmax = 20.0, 4.0           # Achsenende, wächst nur (keine springenden Achsen)
+
+    def push(self, force, m_sh):
+        for buf, v in ((self.f, force), (self.s, m_sh)):
+            buf.append(float(v) if np.isfinite(v) else NAN)
+            del buf[:-self.n]
+        if np.isfinite(self.f).any():
+            self.fmax = max(self.fmax, _nice_max(np.nanmax(self.f), 10, 20))
+        if np.isfinite(self.s).any():
+            self.mmax = max(self.mmax, _nice_max(np.nanmax(self.s), 2, 4))
+
+    def compose(self, frame):
+        """Anzeigebild: Video (verkleinert, mittig) über der Kurve."""
+        vid = cv2.resize(frame, (self.vw, self.vh), interpolation=cv2.INTER_AREA) if self.k < 1 else frame
+        top = np.full((self.vh, self.w, 3), 28, np.uint8)
+        x = (self.w - self.vw) // 2
+        top[:, x:x + self.vw] = vid
+        return np.vstack([top, self.render()])
+
+    def _xy(self, k, v, vmax, n, x0, x1, y0, y1):
+        dx = (x1 - x0) / max(self.n - 1, 1)
+        return int(round(x1 - (n - 1 - k) * dx)), int(round(y1 - min(max(v, 0.0), vmax) / vmax * (y1 - y0)))
+
+    def render(self):
+        w, h = self.w, self.h
+        fs = max(0.45, w / 1080 * 0.6)
+        th = 1 if w < 1400 else 2
+        img = np.full((h, w, 3), 28, np.uint8)
+        x0, x1 = int(0.07 * w), int(w - 0.07 * w)
+        y0, y1 = int(0.18 * h), int(h - 0.14 * h)
+        for k in range(5):
+            y = int(round(y1 - (y1 - y0) * k / 4))
+            cv2.line(img, (x0, y), (x1, y), (70, 70, 70), 1)
+            cv2.putText(img, f"{self.fmax * k / 4:.0f}", (4, y + 5), cv2.FONT_HERSHEY_SIMPLEX, fs * 0.8, PC_FORCE, th, cv2.LINE_AA)
+            cv2.putText(img, f"{self.mmax * k / 4:.0f}", (x1 + 6, y + 5), cv2.FONT_HERSHEY_SIMPLEX, fs * 0.8, PC_SHOULDER, th, cv2.LINE_AA)
+        mx = [np.nanmax(b) if np.isfinite(b).any() else NAN for b in (self.f, self.s)]
+        x = x0
+        names = (("Kraft N" + (f", max {mx[0]:.0f}" if np.isfinite(mx[0]) else ""), PC_FORCE),
+                 ("Moment Schulter Nm" + (f", max {mx[1]:.1f}" if np.isfinite(mx[1]) else ""), PC_SHOULDER))
+        for name, col in names:
+            cv2.putText(img, name, (x, int(0.11 * h)), cv2.FONT_HERSHEY_SIMPLEX, fs, col, th + 1, cv2.LINE_AA)
+            x += cv2.getTextSize(name, cv2.FONT_HERSHEY_SIMPLEX, fs, th + 1)[0][0] + int(0.04 * w)
+        cv2.putText(img, f"-{self.sec:.0f} s", (x0, h - 6), cv2.FONT_HERSHEY_SIMPLEX, fs * 0.8, (170, 170, 170), th, cv2.LINE_AA)
+        cv2.putText(img, "jetzt", (x1 - int(0.05 * w), h - 6), cv2.FONT_HERSHEY_SIMPLEX, fs * 0.8, (170, 170, 170), th, cv2.LINE_AA)
+        L = len(self.f)
+        for buf, vmax, col in ((self.s, self.mmax, PC_SHOULDER), (self.f, self.fmax, PC_FORCE)):
+            run = []
+            for k, v in enumerate(buf + [NAN]):
+                if np.isfinite(v):
+                    run.append(self._xy(k, v, vmax, L, x0, x1, y0, y1))
+                elif len(run) > 1:
+                    cv2.polylines(img, [np.array(run, np.int32)], False, col, th + 1, cv2.LINE_AA)
+                    run = []
+                else:
+                    run = []
+        for buf, vmax, col, unit in ((self.f, self.fmax, PC_FORCE, "N"), (self.s, self.mmax, PC_SHOULDER, "Nm")):
+            arr = np.array(buf, float)
+            if np.isfinite(arr).any():
+                k = int(np.nanargmax(arr))
+                px, py = self._xy(k, arr[k], vmax, L, x0, x1, y0, y1)
+                cv2.line(img, (px, py), (px, y1), col, 1, cv2.LINE_AA)
+                cv2.circle(img, (px, py), max(4, int(fs * 7)), col, -1, cv2.LINE_AA)
+        return img
 
 
 # ---------------------------------------------------------------- Interaktive Abfrage
@@ -950,6 +1098,10 @@ def add_common_args(p):
                    help="Freie Bandlänge in m (Override). 0 = automatisch: Startlänge L0 (Band gerade, ungedehnt) / Skala s")
     p.add_argument("--band-strands", type=int, default=2,
                    help="Parallele Bandstränge (doppelt gelegt = 2), skaliert die Kraft aus der Tabelle")
+    p.add_argument("--rep-min-amp", type=float, default=0.25,
+                   help="Wiederholungszähler: Mindesthub des Handgelenkabstands in m (Anstieg und Rückgang)")
+    p.add_argument("--rep-min-gap-s", type=float, default=0.5,
+                   help="Wiederholungszähler: Mindestabstand zweier Zählungen in s")
     p.add_argument("--no-band", action="store_true",
                    help="Band-Erkennung aus (Video ohne Band): Bandspalten bleiben leer")
     p.add_argument("--no-show", action="store_true", help="Kein Fenster (Batch)")
@@ -974,12 +1126,15 @@ def run_pipeline(model_name, infer, args, meta_extra=None):
     ref_corrector = DepthCorrector("depth", SEG_KEYS)           # v6-Referenz, nur für die Spalten angle_*_v6_raw
     check_samples = {k: [] for k in CHECK_PAIRS}   # rohe Segmentabstände für den Vergleichsreport
 
-    rep, frame_idx, last_ts, calib = 0, 0, -1, False
+    frame_idx, last_ts, calib = 0, -1, False
+    reps = RepCounter(args.rep_min_amp, args.rep_min_gap_s)
+    rep = 0
     rest_m = args.band_rest_m if args.band_rest_m > 0 else NAN       # freie Länge: Override oder Startlänge L0 / s
     rest_src = "manuell (--band-rest-m)" if args.band_rest_m > 0 else "Startlänge L0 / Skala s"
     last_l0 = NAN
+    live = LivePlot(W, H, round(PLOT_SECONDS * src_fps), PLOT_SECONDS)
     if not args.no_show:
-        print("Tasten im Fenster: q Ende, Leertaste Wiederholung zählen, c Startlänge neu messen.")
+        print("Tasten im Fenster: q Ende, Leertaste Wiederholung +1, z Wiederholung -1, c Startlänge neu messen.")
     fps_s, infer_sum = 30.0, 0.0
     t0 = time.perf_counter()
     try:
@@ -1002,6 +1157,7 @@ def run_pipeline(model_name, infer, args, meta_extra=None):
                 w_raw = pose.w
                 w_cor = corrector(w_raw, pose.vis, pose.img * np.array([fw, fh]))   # Kopie, Rohwerte bleiben erhalten
                 w_v6 = ref_corrector(w_raw, pose.vis)
+                reps.update(wrist_distance(w_cor), ts / 1000.0)
                 dists = segment_distances(w_raw, pose.vis)
                 collect_segment_samples(check_samples, dists)
                 dev = [(d / CHECK_PAIRS[k] - 1.0) * 100.0 for k, d in zip(CHECK_KEYS, dists)]
@@ -1012,6 +1168,7 @@ def run_pipeline(model_name, infer, args, meta_extra=None):
                 w_raw = w_cor = w_v6 = pose.w
                 dev = [NAN] * len(CHECK_KEYS)
                 depth_on = [NAN] * len(SEG_KEYS)
+            rep = reps.count
             raw = compute_angles(pose)                         # aus rohen Koordinaten, ungeglättet
             cor_raw = compute_angles(pose, w_cor)              # aus korrigierten Koordinaten, ungeglättet
             sm = ema(cor_raw)                                  # aus korrigierten Koordinaten, EMA
@@ -1062,15 +1219,19 @@ def run_pipeline(model_name, infer, args, meta_extra=None):
                     status = "Skala fehlt: keine Kraft/Momente"
                 else:
                     status = ""
-                draw_hud(frame, pose, sm, b,
+                draw_hud(frame, model_name, pose, sm, b,
                          dict(pct=abs_pct if np.isfinite(abs_pct) else pct, force_n=force_n,
-                              moments=loads[4:8], status=status))
-                cv2.imshow(model_name, frame)
+                              moments=loads[2:4], status=status, rep=rep, frame=frame_idx,
+                              infer_ms=infer_ms, fps=fps_s, u=live.u))
+                live.push(force_n, _mean2(loads[2], loads[3]))
+                cv2.imshow(model_name, live.compose(frame))
                 k = cv2.waitKey(1) & 0xFF
                 if k in (27, ord("q")):
                     break
                 if k == ord(" "):
-                    rep += 1
+                    reps.count += 1
+                if k == ord("z"):
+                    reps.count = max(reps.count - 1, 0)
                 if k == ord("c"):
                     calib = True
             frame_idx += 1
@@ -1105,6 +1266,7 @@ def run_pipeline(model_name, infer, args, meta_extra=None):
             segment_lengths_m={f"{p}-{c}": v for (p, c), v in SEGMENT_LENGTHS.items()},
             body_widths_m={f"{p}-{c}": v for (p, c), v in BODY_WIDTHS.items()},
             segment_check=report,
+            reps=reps.count, rep_min_amp_m=args.rep_min_amp, rep_min_gap_s=args.rep_min_gap_s,
             python=platform.python_version(), opencv=cv2.__version__,
         )
         meta.update(meta_extra or {})
